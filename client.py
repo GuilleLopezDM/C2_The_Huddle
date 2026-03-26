@@ -67,7 +67,7 @@ def run_cliente():
                 # Comando local de salida
                 if mensaje.lower() == "exit":
                     try:
-                            sock.shutdown(socket.SHUT_RDWR) #Tarea para la casa  SHUT_RDWR
+                            sock.shutdown(socket.SHUT_RDWR) #Tarea para la casa  SHUT_RDWR: Permite cerrar el socket para lectura y escritura
                     except OSError:
                         pass
                     sock.close()
@@ -91,7 +91,7 @@ def run_cliente():
             print("\nCerrando cliente...")
             try:
                 sock.close()
-            except OSError:
+            except OSError: #cuales son OSError: conjunto de errores (ConnectionResetError Por ejemplo)
                 pass
             return
 
