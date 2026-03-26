@@ -12,12 +12,11 @@ def broadcast(mensaje, remitente, clientes, servidor):
     excepto al remitente y al socket del servidor.
     """
     clientes_muertos = []
-
+# Como se que no se murio un cliente
     for cliente in clientes:
         # nunca intentar enviar al servidor ni al remitente
         if cliente == remitente or cliente == servidor:
             continue
-# Como se que no se murio un cliente
         try:
             cliente.send(mensaje)
         except OSError:
