@@ -1,109 +1,132 @@
-import socket
 import select
+import socket
+import threading
 
 HOST = "127.0.0.1"
 PORT = 65432
-BUFFER = 1024
+BUFFER = 4096
+MAX_MENSAJE = 1024  # Bytes UTF-8, sin contar el salto de línea final.
+ERROR_LONGITUD = f"El mensaje no puede superar {MAX_MENSAJE} bytes."
 
 
-def broadcast(mensaje, remitente, clientes, servidor):
-    """
-    Envía un mensaje a todos los clientes conectados,
-    excepto al remitente y al socket del servidor.
-    """
-    clientes_muertos = []
-# Como se que no se murio un cliente
-    for cliente in clientes:
-        # nunca intentar enviar al servidor ni al remitente
-        if cliente == remitente or cliente == servidor:
-            continue
+def validar_mensaje(mensaje):
+    """Devuelve el texto original o lanza ValueError si no es válido."""
+    if not isinstance(mensaje, str):
+        raise ValueError("El mensaje debe ser texto.")
+    if not mensaje.strip():
+        raise ValueError("El mensaje no puede estar vacío.")
+    if "\n" in mensaje or "\r" in mensaje:
+        raise ValueError("El mensaje debe ocupar una sola línea.")
+    if len(mensaje.encode("utf-8")) > MAX_MENSAJE:
+        raise ValueError(ERROR_LONGITUD)
+    return mensaje
+
+
+def desconectar(cliente, clientes):
+    """Elimina al cliente y sus datos pendientes; se puede llamar varias veces."""
+    clientes.pop(cliente, None)
+    try:
+        cliente.close()
+    except OSError:
+        pass
+
+
+def enviar(cliente, datos, clientes):
+    try:
+        cliente.sendall(datos)
+        return True
+    except OSError:
+        desconectar(cliente, clientes)
+        return False
+
+
+def broadcast(mensaje, remitente, clientes):
+    """Reenvía a todos excepto al remitente; un fallo no afecta a los demás."""
+    for cliente in list(clientes):
+        if cliente != remitente:
+            enviar(cliente, mensaje, clientes)
+
+
+class ServidorChat:
+    """Chat con select, un único bucle y un buffer por cliente."""
+
+    def __init__(self, host=HOST, port=PORT):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            cliente.send(mensaje)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.socket.bind((host, port))
+            self.socket.listen()
         except OSError:
-            # Si falla el envío, marcamos el cliente "Muerto"
-            clientes_muertos.append(cliente)
+            self.socket.close()
+            raise
+        self.direccion = self.socket.getsockname()
+        self.clientes = {}  # socket: bytes que aún no terminan en salto de línea.
+        self.detener = threading.Event()
 
-    # Limpieza de sockets muertos fuera del loop principal
-    for muerto in clientes_muertos:
-        if muerto in clientes:
-            clientes.remove(muerto)
+    def recibir(self, cliente):
         try:
-            muerto.close()
+            datos = cliente.recv(BUFFER)
         except OSError:
-            pass
+            desconectar(cliente, self.clientes)
+            return
+        if not datos:
+            desconectar(cliente, self.clientes)
+            return
+
+        pendientes = self.clientes[cliente] + datos
+        # TCP puede juntar mensajes o dividir incluso un carácter UTF-8.
+        while b"\n" in pendientes:
+            linea, pendientes = pendientes.split(b"\n", 1)
+            try:
+                validar_mensaje(linea.decode("utf-8"))
+            except ValueError as error:
+                respuesta = f"ERROR: {error}\n".encode("utf-8")
+                if not enviar(cliente, respuesta, self.clientes):
+                    return
+                if len(linea) > MAX_MENSAJE:
+                    desconectar(cliente, self.clientes)
+                    return
+            else:
+                broadcast(linea + b"\n", cliente, self.clientes)
+
+        self.clientes[cliente] = pendientes
+        if len(pendientes) > MAX_MENSAJE:
+            # Limita la memoria si un cliente nunca termina su mensaje.
+            enviar(cliente, f"ERROR: {ERROR_LONGITUD}\n".encode("utf-8"), self.clientes)
+            desconectar(cliente, self.clientes)
+
+    def ejecutar(self):
+        try:
+            while not self.detener.is_set():
+                lectura, _, _ = select.select(
+                    [self.socket, *self.clientes], [], [], 0.05
+                )
+                for activo in lectura:
+                    if activo is self.socket:
+                        try:
+                            cliente, _ = self.socket.accept()
+                        except OSError:
+                            continue
+                        # Un receptor que no lee no puede bloquear indefinidamente.
+                        cliente.settimeout(0.5)
+                        self.clientes[cliente] = b""
+                    elif activo in self.clientes:
+                        # Un broadcast anterior pudo eliminar un socket fallido.
+                        self.recibir(activo)
+        finally:
+            for cliente in list(self.clientes):
+                desconectar(cliente, self.clientes)
+            self.socket.close()
 
 
 def run_server():
-    # Uso de context manager para asegurar cierre del socket
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as servidor:
-        # Permite reutilizar el puerto sin esperar TIME_WAIT
-        servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)# tarea para la casa SOL_SOCKET SETSOCKOPT SO_REUSEADDR
-
-        servidor.bind((HOST, PORT))
-        servidor.listen()
-
-        print(f"Servidor escuchando en {HOST}:{PORT}")
-
-        # Lista que contiene tanto el servidor como los clientes
-        lista_sockets = [servidor]
-
-        try:
-            while True:
-                # select evita usar threads para manejar múltiples clientes
-                lectura_sockets, _, _ = select.select(lista_sockets, [], [])
-
-                for socket_activo in lectura_sockets:
-                    if socket_activo == servidor:
-                        # Nueva conexión entrante
-                        conn, addr = servidor.accept()
-                        print(f"Conexion establecida con {addr}")
-                        lista_sockets.append(conn)
-
-                        mensaje = f"Nuevo cliente conectado: {addr}".encode("utf-8")
-                        broadcast(mensaje, conn, lista_sockets, servidor)
-
-                    else:
-                        try:
-                            datos = socket_activo.recv(BUFFER)
-
-                            # recv vacío => cliente desconectado correctamente
-                            if not datos: 
-                                print("Cliente desconectado")
- 
-                                mensaje = "Un usuario se fue".encode("utf-8")
-                                broadcast(mensaje, socket_activo, lista_sockets, servidor)
-
-                                if socket_activo in lista_sockets:
-                                    lista_sockets.remove(socket_activo)
-
-                                socket_activo.close()
-                            else:
-                                # Reenvío directo (no decodificar/recodificar innecesariamente)
-                                broadcast(datos, socket_activo, lista_sockets, servidor)
-
-                        except (ConnectionResetError, OSError): #Que errores maneja el OSError
-                            # Desconexión abrupta (cable, crash, etc.)
-                            print("El cliente se desconecto de forma abrupta")
-
-                            if socket_activo in lista_sockets:
-                                lista_sockets.remove(socket_activo)
-
-                            try:
-                                socket_activo.close()
-                            except OSError:
-                                pass
-
-        except KeyboardInterrupt:
-            # Manejo limpio de Ctrl+C
-            print("\nCerrando servidor...")
-
-        finally:
-            # Cerrar todos los sockets abiertos
-            for sock in lista_sockets:
-                try:
-                    sock.close()
-                except OSError:
-                    pass
+    servidor = ServidorChat()
+    print(f"Servidor escuchando en {servidor.direccion[0]}:{servidor.direccion[1]}")
+    try:
+        servidor.ejecutar()
+    except KeyboardInterrupt:
+        print("\nCerrando servidor...")
 
 
-run_server()
+if __name__ == "__main__":
+    run_server()

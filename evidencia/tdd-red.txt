@@ -1,0 +1,18 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+______ test_mensaje_largo_completo_desconecta_igual_que_uno_fragmentado _______
+
+    def test_mensaje_largo_completo_desconecta_igual_que_uno_fragmentado():
+        servidor = ServidorChat.__new__(ServidorChat)
+        cliente, sano = Mock(), Mock()
+        cliente.recv.return_value = b"x" * 1025 + b"\n"
+        servidor.clientes = {cliente: b"", sano: b""}
+        servidor.recibir(cliente)
+>       assert cliente not in servidor.clientes
+E       AssertionError: assert <Mock id='2778827780560'> not in {<Mock id='2778827780560'>: b'', <Mock id='2778827781200'>: b''}
+E        +  where {<Mock id='2778827780560'>: b'', <Mock id='2778827781200'>: b''} = <servidor.ServidorChat object at 0x00000286FF0AF110>.clientes
+
+tests\test_servidor.py:90: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_servidor.py::test_mensaje_largo_completo_desconecta_igual_que_uno_fragmentado
+1 failed in 0.26s
